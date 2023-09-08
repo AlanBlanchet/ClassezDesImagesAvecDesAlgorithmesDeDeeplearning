@@ -6,10 +6,8 @@ import re
 import tarfile
 from pathlib import Path
 
-import datasets
 import pandas as pd
 from bs4 import BeautifulSoup
-from datasets import Dataset
 from PIL import Image
 from tqdm import tqdm
 
@@ -39,9 +37,10 @@ if __name__ == "__main__":
             ]
             name = " ".join(name)
 
-            tar.add(str(dog_dir), arcname="images")
-
             for dog_img in dog_dir.iterdir():
+                # Fix jpg
+                Image.open(dog_img).convert("RGB").save(dog_img)
+
                 annotations: list[list[int]] = []
                 # Parse annotations
                 with open(annotations_p / dog_dir.name / dog_img.stem) as f:
@@ -56,5 +55,7 @@ if __name__ == "__main__":
                         )
 
                 df.loc[len(df)] = [dog_img.name, annotations, name]
+
+            tar.add(str(dog_dir), arcname="images")
 
     df.to_csv(export_p / "metadata.csv", index=False)
