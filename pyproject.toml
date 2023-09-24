@@ -21,6 +21,10 @@ bs4 = "^0.0.1"
 lxml = "^4.9.3"
 tqdm = "^4.66.1"
 wandb = "^0.15.10"
+ray = "^2.6.3"
+opencv-python = "^4.8.0.76"
+umap-learn = "^0.5.4"
+seaborn = "^0.12.2"
 
 [tool.poetry.group.dev.dependencies]
 black = "^23.3.0"
