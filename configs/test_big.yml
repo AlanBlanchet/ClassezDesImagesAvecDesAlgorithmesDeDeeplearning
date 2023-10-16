@@ -1,0 +1,6 @@
+architecture: "test"
+epochs: 2
+lr: 0.005
+n_cls: 5
+wandb: False
+img_size: 712
