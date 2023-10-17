@@ -7,7 +7,7 @@ import torch
 import torch.optim as optim
 import torchvision.transforms as T
 from ray import air, train, tune
-from ray.tune.schedulers import PopulationBasedTraining
+from ray.tune.schedulers import ASHAScheduler, PopulationBasedTraining
 from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import DataLoader
@@ -21,8 +21,11 @@ from sdd.model.model import StanfordDogsModel
 from sdd.model.stepper import Loader, StanfordDogsStepper
 from sdd.ray.resolver import keep_tunes, resolve_config
 from sdd.utils.dict import deepupdate
+from sdd.utils.dir import next_run_dir
 
 torch.cuda.init()
+
+LOG_DIR = (Path(__file__).parents[3] / "logs").absolute()
 
 default_config = {
     "architecture": "test",
@@ -36,6 +39,7 @@ default_config = {
     "true_color": "blue",
     "out_color": "red",
     "optimizer": {"name": "AdamW", "betas": (0.9, 0.999), "weight_decay": 1e-2},
+    "log_p": str(LOG_DIR),
 }
 
 default_ray_names = [
@@ -53,9 +57,14 @@ default_ray_names = [
 default_ray = {
     **{name: default_config[name] for name in default_ray_names},
     "log": False,
+    "log_p": str(next_run_dir(LOG_DIR)),
     "ray": {
-        "batch_size": [4, 8, 16, 32, 64, 128, 256, 512, 1024],
-        "lr": [1e-2, 1e-3, 1e-4, 1e-5, 1e-6],
+        "batch_size": {
+            "type": "choice",
+            # "value": [4, 8, 16, 32, 64, 128, 256, 512, 1024],
+            "value": [4, 8, 16, 32, 64],
+        },
+        "lr": {"type": "loguniform", "value": [1e-2, 1e-6]},
     },
 }
 
@@ -71,10 +80,9 @@ def start(global_config: dict):
     default = default_ray if tuning else default_config
     final_config = deepupdate({}, default, global_config)
 
-    log_dir = Path(__file__).parents[3] / "logs"
-    log_dir.mkdir(exist_ok=True)
+    log_dir = Path(final_config["log_p"])
 
-    def run(config):
+    def run(config, checkpoint_p=None):
         objective = 0
 
         config["real_batch_size"] = config.get("real_batch_size", config["batch_size"])
@@ -131,16 +139,14 @@ def start(global_config: dict):
             collate_fn=collator,
         )
 
+        if checkpoint_p is not None:
+            print("Trying to load model", checkpoint_p)
+
         model = StanfordDogsModel(
             img_size, len(dataset.label_map), box_max_amount, model_name=model_name
         ).to(device)
 
-        n = 1
-        run_p = log_dir / f"run-{n}"
-        while run_p.exists():
-            run_p = log_dir / f"run-{n}"
-            n += 1
-        run_p.mkdir(exist_ok=True)
+        run_p = next_run_dir(log_dir)
 
         optimizer = optim.AdamW(
             model.parameters(),
@@ -148,6 +154,19 @@ def start(global_config: dict):
             betas=optimizer_params["betas"],
             weight_decay=optimizer_params["weight_decay"],
         )
+
+        # Initialize trained or stopped
+        loaded_checkpoint = train.get_checkpoint()
+        if loaded_checkpoint:
+            pprint(config)
+
+            raise NotImplementedError()
+            with loaded_checkpoint.as_directory() as loaded_checkpoint_dir:
+                model_state, optimizer_state = torch.load(
+                    os.path.join(loaded_checkpoint_dir, "checkpoint.pt")
+                )
+                model.load_state_dict(model_state)
+                optimizer.load_state_dict(optimizer_state)
 
         scheduler = None
         if decay is not None:
@@ -198,26 +217,28 @@ def start(global_config: dict):
     if tuning:
         os.environ["RAY_AIR_NEW_OUTPUT"] = "0"
         os.environ["WANDB_SILENT"] = "true"
+        os.environ["TUNE_DISABLE_STRICT_METRIC_CHECKING"] = "1"
 
         ray.init()
         scaler = air.ScalingConfig({"CPU": 0.2, "GPU": 0.25}, num_workers=2)
 
         param_space_config = resolve_config(final_config)
-        param_tune_config = keep_tunes(param_space_config)
+        # param_tune_config = keep_tunes(param_space_config)
 
         print("param_space_config :")
         pprint(param_space_config)
-        print("param_tune_config : ")
-        pprint(param_tune_config)
+        # print("param_tune_config :")
+        # pprint(param_tune_config)
 
-        perturbation_interval = 5
-        scheduler = PopulationBasedTraining(
-            time_attr="training_iteration",
-            perturbation_interval=perturbation_interval,
-            metric="val_MulticlassAccuracy",
-            mode="max",
-            hyperparam_mutations=param_tune_config,
-        )
+        # perturbation_interval = 2
+        # pbt = PopulationBasedTraining(
+        #     time_attr="training_iteration",
+        #     perturbation_interval=perturbation_interval,
+        #     mode="max",
+        #     hyperparam_mutations=param_tune_config,
+        #     log_config=False,
+        # )
+        scheduler = ASHAScheduler(time_attr="training_iteration", mode="max")
 
         tuner = tune.Tuner(
             tune.with_resources(
@@ -225,9 +246,14 @@ def start(global_config: dict):
                 resources=scaler,
             ),
             run_config=train.RunConfig(
-                checkpoint_config=train.CheckpointConfig(num_to_keep=2)
+                checkpoint_config=train.CheckpointConfig(),
             ),
-            tune_config=tune.TuneConfig(scheduler=scheduler, num_samples=2),
+            tune_config=tune.TuneConfig(
+                scheduler=scheduler,
+                num_samples=100,
+                max_concurrent_trials=4,
+                metric="val_MulticlassAccuracy",
+            ),
             param_space=param_space_config,
         )
         tuner.fit()

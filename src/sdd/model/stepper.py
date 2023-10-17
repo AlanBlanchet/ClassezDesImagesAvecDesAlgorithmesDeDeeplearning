@@ -1,4 +1,5 @@
 from pathlib import Path
+from pprint import pprint
 from typing import Literal, NamedTuple
 
 import numpy as np
@@ -9,7 +10,8 @@ import torchvision.ops as TO
 import torchvision.transforms.functional as TF
 import torchvision.utils as U
 from attrs import define
-from ray import tune
+from ray import train, tune
+from ray.train import Checkpoint
 from torch.utils.data import DataLoader
 from torchmetrics import MeanMetric
 from tqdm import tqdm, trange
@@ -149,13 +151,27 @@ class StanfordDogsStepper:
 
                     self.log_metrics(metrics, epoch, not is_train)
 
-                    if (
-                        epoch > 0
-                        and epoch % 5 == 0
-                        and not is_train
-                        and self.config.get("ray") is not None
-                    ):
-                        tune.report(deep_dict_parse_tensor(metrics))
+            if (
+                epoch > 0
+                and epoch % 1 == 0
+                and not is_train
+                and self.config.get("ray", False)
+            ):
+                checkpoints_p = self.out_p / "checkpoints"
+                checkpoints_p.mkdir(exist_ok=True)
+
+                checkpoint_p = checkpoints_p / f"{self._epoch}"
+                checkpoint_p.mkdir(exist_ok=True)
+
+                torch.save(
+                    (self.model.state_dict(), self.optimizer.state_dict()),
+                    checkpoint_p / "checkpoint.pt",
+                )
+                checkpoint = Checkpoint.from_directory(checkpoint_p)
+
+                train.report(
+                    {"checkpoint": checkpoint, **deep_dict_parse_tensor(metrics)},
+                )
 
         self.wandb_run.finish()
 
@@ -261,14 +277,12 @@ class StanfordDogsStepper:
                     rand_bbs.type(torch.uint8),
                     colors=self.config["out_color"],
                     labels=self.dataset.label_map[rand_clf],
-                    font_size=10,
                 )
                 img = U.draw_bounding_boxes(
                     img,
                     bbs.type(torch.uint8),
                     colors=self.config["true_color"],
                     labels=self.dataset.label_map[true_clfs],
-                    font_size=10,
                 )
 
                 TF.to_pil_image(img).save(epoch_p / f"{rand}.jpg")
