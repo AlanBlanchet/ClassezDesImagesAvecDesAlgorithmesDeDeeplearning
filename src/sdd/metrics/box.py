@@ -7,7 +7,8 @@ class BoxMetrics(Metric):
         super().__init__()
 
         self.regression = MetricCollection(
-            *[metric() for metric in [MeanSquaredError, MeanAbsoluteError]]
+            [metric() for metric in [MeanSquaredError, MeanAbsoluteError]],
+            compute_groups=False,
         )
 
         self.iou = IntersectionOverUnion()

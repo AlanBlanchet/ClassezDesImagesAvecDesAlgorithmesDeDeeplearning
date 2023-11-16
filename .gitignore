@@ -1,3 +1,7 @@
+/data
+
+neo.yml
+
 # Pytorch
 *.pt
 

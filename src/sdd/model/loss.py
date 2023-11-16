@@ -20,13 +20,25 @@ class ObjectDetectionLoss(nn.Module):
 
         clf_loss = F.cross_entropy(out_clf[mask], true_clf[mask])
 
-        bb_loss = F.l1_loss(out_bbs[mask], true_bbs[mask])
+        bb_loss = F.l1_loss(out_bbs[mask], true_bbs[mask]) * 2
 
         obj_loss = F.mse_loss(out_obj.sigmoid(), true_obj)
 
         loss = clf_loss + bb_loss + obj_loss
 
         return loss, (clf_loss, bb_loss, obj_loss)
+
+
+class ObjectClassificationLoss(nn.Module):
+    def __init__(self, img_size):
+        super().__init__()
+
+        self.img_size = img_size
+
+    def forward(self, clf):
+        out_clf, true_clf = clf
+
+        return F.cross_entropy(out_clf, true_clf)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+architecture: "test"
+epochs: 10
+lr: 0.005
+n_cls: 5
+wandb: False

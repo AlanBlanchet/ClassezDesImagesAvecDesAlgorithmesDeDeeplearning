@@ -1,6 +1,0 @@
-architecture: "test"
-epochs: 10
-n_cls: 5
-img_size: 32
-group: "ray_test"
-ray: True

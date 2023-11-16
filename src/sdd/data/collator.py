@@ -16,21 +16,24 @@ class BB_Collator:
             for annot_name in ["annotations", "annotations_unscaled"]:
                 annots = annot_max.clone()
                 annot = elem[annot_name]
-                s = annot.shape
-                annots[i, : s[0], : s[1]] = annot
+                s0, s1 = annot.shape
+                s0 = min(s0, self.box_max_amount)
+                # Risk of losing some annotations
+                annots[i, :s0, :s1] = annot[:s0, :s1]
                 elem[annot_name] = annots[i]
 
             annotations_mask = torch.zeros(
                 self.box_max_amount,
             )
-            annotations_mask[: s[0]] = 1
+            annotations_mask[:s0] = 1
             elem["annotations_mask"] = annotations_mask
 
-            target = torch.tensor(self.label_map[elem["target"]])
-
-            elem["target"] = target.unsqueeze(dim=-1)[
-                torch.zeros((self.box_max_amount,), dtype=torch.int)
-            ]
+            # Set all targets
+            targets = torch.tensor([self.label_map[t] for t in elem["target"]])
+            target = torch.ones((self.box_max_amount,), dtype=torch.int) * -1
+            min_len = min(self.box_max_amount, len(targets))
+            target[:min_len] = targets[:min_len]
+            elem["target"] = target
 
         return torch.utils.data.default_collate(batch)
 

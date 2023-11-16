@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 from pprint import pprint
@@ -5,27 +6,27 @@ from pprint import pprint
 import ray
 import torch
 import torch.optim as optim
-import torchvision.transforms as T
 from ray import air, train, tune
-from ray.tune.schedulers import ASHAScheduler, PopulationBasedTraining
-from sklearn.model_selection import train_test_split
-from torch.optim.lr_scheduler import StepLR
+from ray.tune.schedulers import ASHAScheduler
+from torch.optim.lr_scheduler import ExponentialLR, StepLR
 from torch.utils.data import DataLoader
-from torchmo import ConvObserver
 
 import wandb
+from sdd.compat.utils import chose_if_task_bb, is_task_bb
+from sdd.data.augmentations import BaseAugmentations, StanfordDogsAugmentations
 from sdd.data.collator import BB_Collator
 from sdd.data.dataset import StanfordDogsDataset
-from sdd.model.loss import ObjectDetectionLoss
+from sdd.model.loss import ObjectClassificationLoss, ObjectDetectionLoss
 from sdd.model.model import StanfordDogsModel
 from sdd.model.stepper import Loader, StanfordDogsStepper
-from sdd.ray.resolver import keep_tunes, resolve_config
+from sdd.ray.resolver import resolve_config
 from sdd.utils.dict import deepupdate
 from sdd.utils.dir import next_run_dir
 
 torch.cuda.init()
 
 LOG_DIR = (Path(__file__).parents[3] / "logs").absolute()
+LOG_DIR.mkdir(exist_ok=True)
 
 default_config = {
     "architecture": "test",
@@ -34,12 +35,13 @@ default_config = {
     "img_size": 32,
     "n_cls": -1,
     "batch_size": 8,
-    "box_max_amount": 6,
+    "box_max_amount": 8,
     "wandb": True,
     "true_color": "blue",
     "out_color": "red",
     "optimizer": {"name": "AdamW", "betas": (0.9, 0.999), "weight_decay": 1e-2},
     "log_p": str(LOG_DIR),
+    "mosaic": False,
 }
 
 default_ray_names = [
@@ -82,68 +84,70 @@ def start(global_config: dict):
 
     log_dir = Path(final_config["log_p"])
 
-    def run(config, checkpoint_p=None):
-        objective = 0
-
+    def run(config):
         config["real_batch_size"] = config.get("real_batch_size", config["batch_size"])
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # Config params
-        box_max_amount = config["box_max_amount"]
+        task = config.get("task", "detection")
+        box_max_amount = config["box_max_amount"] if is_task_bb(task) else 1
         img_size = config["img_size"]
         n_cls = config.pop("n_cls", -1)
-
-        dataset = StanfordDogsDataset(img_size, num_classes=n_cls)
 
         # Extract other config params
         model_name = config["architecture"]
         batch_size = config["batch_size"]
         log = config["log"]
-        config["num_classes"] = dataset.num_classes_
         epochs = config["epochs"]
         optimizer_params = config["optimizer"]
         group = config.get("group", None)
 
         batch_ratio = config["batch_size"] / config["real_batch_size"]
         assert int(batch_ratio) == float(batch_ratio)
-
-        # Relative lr - Stable loss
-        # Ref batch_size = 8
-        # k = batch_size / 8
-        # lr * sqrt(k)
-        # lr_ratio = (batch_size * config["lr"]) / 128
-        # config["lr_ratio"] = lr_ratio
-
         lr = config["lr"]
         wandb_active = config["wandb"]
         decay = config.get("decay", None)
+        min_lr = config.get("min_lr", None)
+        mosaic = config["mosaic"]
 
-        idx_train, idx_test = train_test_split(
-            range(len(dataset)), stratify=dataset.dataset["target"], random_state=0
+        groups = []
+        if group is not None:
+            groups.append(group)
+        groups.append(task)
+
+        augmentations = StanfordDogsAugmentations()
+        dataset = StanfordDogsDataset(
+            config,
+            img_size,
+            num_classes=n_cls,
+            augmentations=augmentations,
+            mosaic=mosaic,
         )
+        config["num_classes"] = dataset.num_classes_
 
         collator = BB_Collator(dataset.label_map, box_max_amount)
 
         train_dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
-            sampler=idx_train,
+            sampler=dataset.train_idx_,
             collate_fn=collator,
         )
 
         val_dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
-            sampler=idx_test,
+            sampler=dataset.val_idx_,
             collate_fn=collator,
         )
 
-        if checkpoint_p is not None:
-            print("Trying to load model", checkpoint_p)
-
         model = StanfordDogsModel(
-            img_size, len(dataset.label_map), box_max_amount, model_name=model_name
+            config,
+            img_size,
+            len(dataset.label_map),
+            box_max_amount,
+            model_name=model_name,
         ).to(device)
 
         run_p = next_run_dir(log_dir)
@@ -175,9 +179,17 @@ def start(global_config: dict):
                 step_size=decay.get("step_size", 50),
                 gamma=decay.get("gamma", 0.99),
             )
-            config["scheduler"] = type(scheduler).__name__
+        elif min_lr is not None:
+            nb_iters = epochs * math.ceil(len(train_dataloader) / batch_ratio)
+            gamma = (min_lr / lr) ** (1 / nb_iters)
 
-        loss = ObjectDetectionLoss(img_size)
+            scheduler = ExponentialLR(optimizer, gamma=gamma)
+
+        config["scheduler"] = type(scheduler).__name__
+
+        loss = chose_if_task_bb(ObjectDetectionLoss, ObjectClassificationLoss, task)(
+            img_size
+        )
 
         # Start a new wandb run to track this script
         run = wandb.init(
@@ -187,7 +199,7 @@ def start(global_config: dict):
                 **config,
                 "optimizer": type(optimizer).__name__,
             },
-            tags=[group] if group is not None else None,
+            tags=groups,
             mode=None if wandb_active else "disabled",
         )
 

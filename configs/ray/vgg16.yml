@@ -1,7 +1,0 @@
-architecture: "vgg16"
-epochs: 100
-n_cls: 5
-wandb: True
-img_size: 32
-group: "vgg16_32"
-ray: True

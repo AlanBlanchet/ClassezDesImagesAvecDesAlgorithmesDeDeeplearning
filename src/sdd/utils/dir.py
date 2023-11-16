@@ -7,6 +7,6 @@ def next_run_dir(log_dir: Path):
     while run_p.exists():
         run_p = log_dir / f"run-{n}"
         n += 1
-    run_p.mkdir(exist_ok=True)
+    run_p.mkdir(exist_ok=True, parents=True)
 
     return run_p

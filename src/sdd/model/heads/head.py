@@ -10,7 +10,7 @@ class ObjectDetectionHead(nn.Module):
     def __init__(self, in_chans: int, num_bb: int, num_classes: int):
         super().__init__()
 
-        self.classifier = ClassificationHead(in_chans, num_bb, num_classes)
+        self.classifier = ClassificationHead(in_chans, num_classes, num_bb)
 
         self.objectness = ObjectnessHead(in_chans, num_bb)
 
@@ -27,3 +27,22 @@ class ObjectDetectionHead(nn.Module):
         out_bb = out_bb.mean(dim=-2)  # (B, N, 4)
 
         return out_clf, out_bb, out_objn
+
+
+class ObjectClassificationHead(nn.Module):
+    def __init__(self, in_channels: int, num_classes: int):
+        super().__init__()
+
+        self.classifier = ClassificationHead(in_channels, num_classes)
+
+    def forward(self, x):
+        shape = x.shape
+
+        if len(shape) == 4:
+            out_clf: torch.Tensor = self.classifier(x)  # (B, N, S, C)
+        else:
+            out_clf = self.classifier(x.view(shape[0], 1, 1, shape[1]))
+
+        out_clf = out_clf.mean(dim=(-3, 2))  # (B, C)
+
+        return out_clf

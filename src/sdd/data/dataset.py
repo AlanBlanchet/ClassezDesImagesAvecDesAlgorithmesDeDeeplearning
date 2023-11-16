@@ -1,150 +1,92 @@
-import cv2
-import datasets
-import numpy as np
-import torch
-import torchvision.transforms.functional as TF
-import torchvision.utils as U
 from attrs import define, field
+from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 
-from sdd.data.maps.basic import min_max_annotations, rescale
-from sdd.data.utils.originals import keep_originals
-from sdd.model.label import LabelMap
-
-
-def to_rgb(items):
-    items["image"] = [item.convert("RGB") for item in items["image"]]
-    return items
+from sdd.data.augmentations import BaseAugmentations, StanfordDogsAugmentations
+from sdd.data.mosaic import MosaicStanfordDogsDataset
+from sdd.data.standard import StandardStanfordDogsDataset
 
 
 @define
 class StanfordDogsDataset(Dataset):
-    resize = field(default=-1)
+    config = field()
+    img_size = field(default=-1)
     num_classes = field(default=-1)
+    augmentations = field(default=None)
+    mosaic = field(default=False)
 
     def __attrs_post_init__(self):
-        self.__keep_original = False
-        self.__demo = False
+        self._std_dataset = StandardStanfordDogsDataset(
+            self.img_size,
+            num_classes=self.num_classes,
+            augmentations=self.augmentations,
+        )
+        self.num_classes_ = self._std_dataset.num_classes_
+        self.label_map = self._std_dataset.label_map
 
-        self.dataset = datasets.load_dataset("Alanox/stanford-dogs", split="full")
-
-        df = self.dataset.to_pandas()["target"]
-        unique_targets = df.unique()
-
-        if self.num_classes != -1:
-            self.num_classes_ = self.num_classes
-
-            np.random.seed(self.num_classes_)
-
-            rand_targets = np.random.choice(
-                unique_targets, size=self.num_classes_
-            ).tolist()
-
-            b = df.isin(rand_targets)
-            idx = df[b].index
-
-            self.dataset = self.dataset.select(idx)
-        else:
-            self.num_classes_ = len(unique_targets)
-
-        self.pytorch_dataset = self.dataset.with_format("torch")
-
-        self.label_map = LabelMap(self.dataset["target"])
-
-    def original(self, keep=False):
-        self.__keep_original = keep
-        return self
-
-    def demo(self, demo=True):
-        self.__demo = demo
-        return self
-
-    def __getitem__(self, idx):
-        item = self.pytorch_dataset[idx]
-
-        output = {"index": torch.tensor(idx)}
-
-        to_keep = []
-        if self.__keep_original:
-            to_keep.append("image")
-
-        # Map to keep track of original data and copy item data
-        output = keep_originals(output, item, to_keep)
-        output["annotations"] = min_max_annotations(
-            output["annotations"], output["image"].shape[:2]
+        idx_train, idx_test = train_test_split(
+            range(len(self._std_dataset)),
+            stratify=self._std_dataset.dataset["target"],
+            random_state=0,
         )
 
-        image = output["image"]
-        if self.resize > 0:
-            output["image"] = (
-                TF.resize(
-                    image.permute(2, 0, 1), (self.resize, self.resize), antialias=True
-                )
-                / 255.0
+        # Base augmentations
+        base_augmentations = BaseAugmentations(
+            self.config, self._std_dataset.pytorch_dataset, idx_train
+        )
+        self._std_dataset.set_base_augmentations(base_augmentations)
+
+        if self.mosaic:
+            self.dataset_ = MosaicStanfordDogsDataset(
+                self.img_size, self._std_dataset, idx_train, idx_test
             )
+            self.train_idx_ = self.dataset_.train_idx_
+            self.val_idx_ = self.dataset_.val_idx_
+        else:
+            self.dataset_ = self._std_dataset
+            self.train_idx_ = idx_train
+            self.val_idx_ = idx_test
 
-        output["annotations_unscaled"] = rescale(
-            output["annotations"], output["image"].shape[1:]
-        )
+    def original(self, keep: bool = False):
+        self._std_dataset.original(keep)
+        return self
 
-        if self.__demo:
-            for shape, mask_name, annots in zip(
-                [output["image"].shape, image.permute(2, 0, 1).shape],
-                ["mask", "original_mask"],
-                [
-                    output["annotations_unscaled"],
-                    rescale(output["annotations"], image.shape[:2]),
-                ],
-            ):
-                # Create mask
-                mask = np.zeros(shape).transpose(1, 2, 0).copy()
-                for annotation in annots:
-                    x1, y1, x2, y2 = annotation.numpy()
-                    cv2.rectangle(
-                        mask,
-                        (x1, y1),
-                        (x2, y2),
-                        (255, 255, 255),
-                        thickness=-1,
-                    )
+    def demo(self, demo: bool = True):
+        self._std_dataset.demo(demo)
+        return self
 
-                mask = torch.from_numpy(mask)
-                output[mask_name] = mask.permute(2, 0, 1) / 255.0
-
-        # TODO
-        # Add transforms for training
-
-        return output
+    def set_base_augmentations(self, augmentations):
+        self.dataset_.set_base_augmentations(augmentations)
 
     def __len__(self):
-        return len(self.pytorch_dataset)
+        return len(self.dataset_)
+
+    def __getitem__(self, idx):
+        return self.dataset_[idx]
 
 
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
-    import torchvision.transforms as T
+    import torch
+    import torchvision.transforms.functional as TF
+    import torchvision.utils as U
 
     # Resize
-    size = 512
+    size = 1024
+    n_cls = 5
+
+    # Augs
+    augs = StanfordDogsAugmentations()
 
     # Dataset loading
-    dataset = StanfordDogsDataset(size, 5).original(True).demo()
+    dataset = StanfordDogsDataset(size, n_cls, augs).original(True).demo()
 
     print(dataset)
 
-    # Picking random image
-    rand = torch.randint(len(dataset), (1,)).squeeze().item()
-    print(f"{rand=}")
-
-    item = dataset[56]
-
-    print(item.keys())
-
-    item["original_image"] = item["original_image"].permute(2, 0, 1)
-    torch_image = item["original_image"]
-    annots = item["annotations_unscaled"]
-
-    resize = T.Resize((size, size), antialias=True)
+    item = dataset[-1]
+    image, annots = item["image"], item["annotations_unscaled"]
+    image = (image * 255).to(torch.uint8)
+    img = TF.to_pil_image(image)
 
     def draw_bb(image, fill=False):
         return U.draw_bounding_boxes(
@@ -152,26 +94,19 @@ if __name__ == "__main__":
         )
 
     # Creating visual representations
-    item["mask_over"] = draw_bb(resize(torch_image.clone()), fill=True)
-    item["mask_over_border"] = draw_bb(resize(torch_image.clone()))
+    item["mask_over"] = draw_bb(image.clone(), fill=True)
+    item["mask_over_border"] = draw_bb(image.clone())
 
-    # Creating visual representations
-    item["original_mask_over"] = draw_bb(torch_image.clone(), fill=True)
-    item["original_over_border"] = draw_bb(torch_image.clone())
-
-    fig, axs = plt.subplots(2, 4, figsize=(20, 8))
+    fig, axs = plt.subplots(1, 3, figsize=(20, 8))
     axs = axs.flatten()
 
-    fig.suptitle(f"{item['name']}, {item['target']}")
+    print("SHAPE", image.dtype, image.min(), image.max())
+
+    fig.suptitle(f"{item['name']}, {','.join(item['target'])}")
     for ax, name in zip(
         axs,
         [
-            "original_image",
-            "original_mask",
-            "original_mask_over",
-            "original_over_border",
             "image",
-            "mask",
             "mask_over",
             "mask_over_border",
         ],
