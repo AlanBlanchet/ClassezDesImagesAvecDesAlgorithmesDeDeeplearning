@@ -13,7 +13,7 @@ class BB_Collator:
         annot_max = torch.zeros(B, self.box_max_amount, 4)
 
         for i, elem in enumerate(batch):
-            for annot_name in ["annotations", "annotations_unscaled"]:
+            for annot_name in ["annotations"]:  # , "annotations_unscaled"]:
                 annots = annot_max.clone()
                 annot = elem[annot_name]
                 s0, s1 = annot.shape

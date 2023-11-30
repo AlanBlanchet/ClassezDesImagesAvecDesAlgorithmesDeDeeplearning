@@ -8,8 +8,8 @@ import torchvision.utils as U
 from attrs import define, field
 from torch.utils.data import Dataset
 
+from sdd.compat.format import min_max_annotations, rescale, to_format, to_normalized
 from sdd.data.augmentations import StanfordDogsAugmentations
-from sdd.data.maps.basic import min_max_annotations, rescale
 from sdd.data.utils.originals import keep_originals
 from sdd.model.label import LabelMap
 
@@ -25,6 +25,7 @@ class StandardStanfordDogsDataset(Dataset):
     num_classes = field(default=-1)
     augmentations = field(default=None)
     base_augmentations = field(default=None)
+    format = field(default="pascal_voc")
 
     def __attrs_post_init__(self):
         self.__keep_original = False
@@ -82,37 +83,46 @@ class StandardStanfordDogsDataset(Dataset):
             original_image = output["original_image"]
         image = output["image"].permute(2, 0, 1)
 
-        output["annotations"] = min_max_annotations(
-            output["annotations"], image.shape[1:]
-        ).clamp_max(1.0)
-        output["target"] = [item["target"] for _ in range(len(output["annotations"]))]
+        # output["annotations"] = min_max_annotations(
+        #     output["annotations"], image.shape[1:]
+        # ).clamp_max(1.0)
+        annotations = output["annotations"]
+        annotations = to_format(annotations, image.shape[1:], self.format)
 
-        if self.img_size > 0:
-            image = TF.resize(
-                image,
-                (self.img_size, self.img_size),
-                antialias=True,
-            )
+        output["target"] = [item["target"] for _ in range(len(annotations))]
+
+        # if self.img_size > 0:
+        #     image = TF.resize(
+        #         image,
+        #         (self.img_size, self.img_size),
+        #         antialias=True,
+        #     )
 
         if self.augmentations:
             result = self.augmentations(
                 image=image.permute(1, 2, 0),
-                bbox=output["annotations"],
+                bbox=annotations,
                 labels=output["target"],
             )
-            image = torch.from_numpy(result["image"]).permute(2, 0, 1) / 255.0
-            output["annotations"] = torch.tensor(result["bboxes"])
+            image = result["image"]
+            annotations = result["bboxes"]
 
         if self.base_augmentations:
-            image = self.base_augmentations(image)
+            result = self.base_augmentations(
+                image=image,
+                bbox=annotations,
+                labels=output["target"],
+            )
+            image = result["image"].permute(2, 0, 1)
+            annotations = torch.tensor(result["bboxes"])
 
-        output["annotations_unscaled"] = rescale(output["annotations"], image.shape[1:])
+        # output["annotations_unscaled"] = rescale(output["annotations"], image.shape[1:])
 
         if self.__demo and self.__keep_original:
             for shape, mask_name, annots in zip(
                 [image.permute(1, 2, 0).shape, original_image.shape],
                 ["mask", "original_mask"],
-                [output["annotations_unscaled"], output["original_annotations"]],
+                [annotations, output["original_annotations"]],
             ):
                 # Create mask
                 mask = np.zeros(shape).copy()
@@ -129,9 +139,8 @@ class StandardStanfordDogsDataset(Dataset):
                 mask = torch.from_numpy(mask)
                 output[mask_name] = mask.permute(2, 0, 1) / 255.0
 
-        # image = self.normalize(image)
-
-        output["image"] = image
+        output["annotations"] = to_normalized(annotations, self.format, self.img_size)
+        output["image"] = image / 255.0
         return output
 
     def __len__(self):

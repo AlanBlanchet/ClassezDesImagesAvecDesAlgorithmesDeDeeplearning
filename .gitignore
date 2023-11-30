@@ -7,7 +7,7 @@ neo.yml
 
 
 # Logs
-logs/
+runs/
 wandb/
 
 # Byte-compiled / optimized / DLL files

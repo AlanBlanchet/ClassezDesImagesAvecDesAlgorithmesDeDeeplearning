@@ -5,7 +5,7 @@ import torchvision.utils as U
 from attrs import define
 from torch.utils.data import Dataset
 
-from sdd.data.maps.basic import rescale
+from sdd.compat.format import rescale
 from sdd.data.standard import StandardStanfordDogsDataset
 
 

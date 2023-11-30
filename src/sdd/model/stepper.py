@@ -16,8 +16,8 @@ from torchmetrics import MeanMetric
 from tqdm import tqdm, trange
 from wandb.wandb_run import Run
 
-from sdd.compat.utils import is_task_bb, return_if_task_bb
-from sdd.data.maps.basic import rescale
+from sdd.compat import is_task_bb
+from sdd.compat.format import format_for_visualize
 from sdd.data.standard import StandardStanfordDogsDataset
 from sdd.metrics.box import BoxMetrics
 from sdd.metrics.classification import ClassificationMetrics
@@ -52,13 +52,15 @@ class StanfordDogsStepper:
 
     def __attrs_post_init__(self):
         self.task = self.config.get("task", "detection")
+        self.format = self.config.get("format", "pascal_voc")
+        self.returns_loss = self.config.get("model_returns_loss", False)
 
         self._clf_metrics = ClassificationMetrics(self.dataset.num_classes_).to(
             self.device
         )
 
         if is_task_bb(self.task):
-            self._bb_metrics = BoxMetrics().to(self.device)
+            self._bb_metrics = BoxMetrics(self.format).to(self.device)
             self._bb_loss_metric = MeanMetric().to(self.device)
             self._obj_loss_metric = MeanMetric().to(self.device)
 
@@ -91,6 +93,9 @@ class StanfordDogsStepper:
         return {f"{prefix}_{k}": v for k, v in metrics.items()}
 
     def metrics(self) -> dict:
+        if self.returns_loss and self.model.training:
+            return {}
+
         addon = {}
 
         loss = self._loss_metric.compute()
@@ -196,25 +201,21 @@ class StanfordDogsStepper:
 
         # Forward
         if is_task_bb(self.task):
-            out_clf, out_bbs, out_obj = self.model(image)
+            output = self.model(image, bbs=true_bb, clfs=true_clf, objs=true_obj)
 
-            # Loss
-            loss_sum, (clf_loss, bb_loss, obj_loss) = self.loss(
-                (out_clf, true_clf.long()), (out_bbs, true_bb), (out_obj, true_obj)
-            )
+            if self.returns_loss:
+                loss_sum, (clf_loss, bb_loss, obj_loss) = output
+            else:
+                out_clf, out_bbs, out_obj = output
+                # Loss
+                loss_sum, (clf_loss, bb_loss, obj_loss) = self.loss(
+                    (out_clf, true_clf.long()), (out_bbs, true_bb), (out_obj, true_obj)
+                )
         else:
             true_clf = true_clf[..., 0]
 
             out_clf = self.model(image)
             clf_loss = loss_sum = self.loss((out_clf, true_clf.long()))
-
-        # bb_loss = (
-        #     F.smooth_l1_loss(out_bbs, true_bb, reduction="none").sum(dim=-1)
-        #     * true_obj
-        # )  # (B,N)
-        # bb_loss = (bb_loss.sum(dimrun=-1) / true_obj.sum(dim=-1)).mean(
-        #     dim=0
-        # )
 
         if training:
             # Zero gradient
@@ -225,119 +226,123 @@ class StanfordDogsStepper:
 
         # Log
         with torch.no_grad():
-            if is_task_bb(self.task):
-                mask = true_obj == 1
+            if not self.returns_loss:
+                if is_task_bb(self.task):
+                    mask = true_obj == 1
 
-                out_clf_masked = out_clf[mask]
-                true_clf_masked = true_clf[mask]
+                    out_clf_masked = out_clf[mask]
+                    true_clf_masked = true_clf[mask]
 
-                probas_clf = F.softmax(out_clf_masked, dim=1)
+                    probas_clf = F.softmax(out_clf_masked, dim=1)
 
-                preds_bbs = out_bbs[mask]
+                    preds_bbs = out_bbs[mask]
 
-                self._clf_metrics.update(out_clf_masked, true_clf_masked)
+                    self._clf_metrics.update(out_clf_masked, true_clf_masked)
 
-                preds_clf = probas_clf.argmax(dim=1)
+                    preds_clf = probas_clf.argmax(dim=1)
 
-                self._bb_metrics.update(
-                    {"boxes": preds_bbs, "labels": preds_clf},
-                    {"boxes": true_bb[mask], "labels": true_clf_masked},
-                )
+                    self._bb_metrics.update(
+                        (out_bbs, out_clf, out_obj), (true_bb, true_clf, true_obj)
+                    )
 
-                self._bb_loss_metric.update(bb_loss)
-                self._obj_loss_metric.update(obj_loss)
-            else:
-                probas_clf = F.softmax(out_clf, dim=1)
+                    self._bb_loss_metric.update(bb_loss)
+                    self._obj_loss_metric.update(obj_loss)
+                else:
+                    probas_clf = F.softmax(out_clf, dim=1)
 
-                self._clf_metrics.update(probas_clf, true_clf)
+                    self._clf_metrics.update(probas_clf, true_clf)
 
-            self._clf_loss_metric.update(clf_loss)
-            self._loss_metric.update(loss_sum)
+                self._clf_loss_metric.update(clf_loss)
+                self._loss_metric.update(loss_sum)
 
-            indexes = datapoints["index"]
-            rand = self.rand_item
+                indexes = datapoints["index"]
+                rand = self.rand_item
 
-            # Pick a random sample for logging
-            if not training and rand in indexes and is_task_bb(self.task):
-                rand_idx_pos = (indexes == rand).nonzero().squeeze(dim=0)
-                batch_idx = rand_idx_pos.item()
+                # Pick a random sample for logging
+                if not training and rand in indexes and is_task_bb(self.task):
+                    rand_idx_pos = (indexes == rand).nonzero().squeeze(dim=0)
+                    batch_idx = rand_idx_pos.item()
 
-                epoch_p = self.examples_p / f"{self._epoch}"
-                epoch_p.mkdir(exist_ok=True)
+                    epoch_p = self.examples_p / f"{self._epoch}"
+                    epoch_p.mkdir(exist_ok=True)
 
-                show_size = 1024
+                    show_size = 1024
 
-                rescale_size = (show_size,) * 2
+                    true_mask = mask[batch_idx]
+                    true_clfs = true_clf[batch_idx, true_mask]
 
-                true_mask = mask[batch_idx]
-                true_clfs = true_clf[batch_idx, true_mask]
-                bbs = rescale(true_bb[batch_idx, true_mask], rescale_size)
+                    rand_obj = out_obj[batch_idx].sigmoid()
+                    rand_mask = rand_obj > 0.5
 
-                rand_image = TF.resize(
-                    (image[batch_idx] * 255).to(torch.uint8), rescale_size
-                )
-                rand_obj = out_obj[batch_idx].sigmoid()
-                rand_mask = rand_obj > 0.5
+                    rand_pred_clf = F.softmax(out_clf[batch_idx, rand_mask], dim=1)
+                    rand_clf = rand_pred_clf.argmax(dim=1)
 
-                rand_pred_clf = F.softmax(out_clf[batch_idx, rand_mask], dim=1)
-                rand_clf = rand_pred_clf.argmax(dim=1)
-                rand_bbs = out_bbs[batch_idx, rand_mask]
-                rand_bbs = rescale(torch.clip(rand_bbs, 0, 1), rescale_size)
-                for bb in rand_bbs:
-                    if bb[0] > bb[2]:
-                        bb[[0, 2]] = bb[[2, 0]]
-                    if bb[1] > bb[3]:
-                        bb[[1, 3]] = bb[[3, 1]]
+                    rand_image, bbs = format_for_visualize(
+                        image[batch_idx],
+                        true_bb[batch_idx, true_mask],
+                        self.format,
+                        show_size,
+                        normalized=True,
+                    )
+                    _, rand_bbs = format_for_visualize(
+                        image[batch_idx],
+                        out_bbs[batch_idx, rand_mask],
+                        self.format,
+                        show_size,
+                        normalized=True,
+                    )
 
-                # observer = ConvObserver(model, limit=5)
-                # observer(image)
-                # observer.save_figs(epoch_p)
+                    # observer = ConvObserver(model, limit=5)
+                    # observer(image)
+                    # observer.save_figs(epoch_p)
 
-                # model.to(device)
-                # image.to(device)
+                    # model.to(device)
+                    # image.to(device)
 
-                # Build predicted image
-                # img: torch.Tensor = image[batch_idx]
-                # img = (img * 255).type(torch.uint8)
+                    # Build predicted image
+                    # img: torch.Tensor = image[batch_idx]
+                    # img = (img * 255).type(torch.uint8)
 
-                # Current
-                rand_image = U.draw_bounding_boxes(
-                    rand_image,
-                    rand_bbs.type(torch.int32),
-                    colors=self.config["out_color"],
-                    labels=self.dataset.label_map[rand_clf],
-                )
-                rand_image = U.draw_bounding_boxes(
-                    rand_image,
-                    bbs.type(torch.int32),
-                    colors=self.config["true_color"],
-                    labels=self.dataset.label_map[true_clfs],
-                )
+                    # Current
+                    rand_image = U.draw_bounding_boxes(
+                        rand_image,
+                        rand_bbs,
+                        colors=self.config["out_color"],
+                        labels=self.dataset.label_map[rand_clf],
+                    )
+                    rand_image = U.draw_bounding_boxes(
+                        rand_image,
+                        bbs,
+                        colors=self.config["true_color"],
+                        labels=self.dataset.label_map[true_clfs],
+                    )
 
-                TF.to_pil_image(rand_image).save(epoch_p / f"{rand}.jpg")
+                    TF.to_pil_image(rand_image).save(epoch_p / f"{rand}.png")
 
-                # Original
-                self.dataset.original(True)
-                original_item = self.dataset[rand]
-                img = original_item["original_image"].type(torch.uint8).permute(2, 0, 1)
-                img = TF.resize(img, rescale_size)
-                # annots = original_item["original_annotations"]
-                self.dataset.original(False)
+                    # Original
+                    self.dataset.original(True)
+                    original_item = self.dataset[rand]
+                    img = (
+                        original_item["original_image"]
+                        .type(torch.uint8)
+                        .permute(2, 0, 1)
+                    )
+                    img, annots = format_for_visualize(
+                        img,
+                        original_item["original_annotations"],
+                        "pascal_voc",
+                        show_size,
+                    )
+                    self.dataset.original(False)
 
-                img = U.draw_bounding_boxes(
-                    img,
-                    rand_bbs.type(torch.int32),
-                    colors=self.config["out_color"],
-                    labels=self.dataset.label_map[rand_clf],
-                )
-                img = U.draw_bounding_boxes(
-                    img,
-                    bbs.type(torch.int32),
-                    colors=self.config["true_color"],
-                    labels=self.dataset.label_map[true_clfs],
-                )
+                    img = U.draw_bounding_boxes(
+                        img,
+                        annots.type(torch.int32),
+                        colors=self.config["true_color"],
+                        labels=self.dataset.label_map[true_clfs],
+                    )
 
-                TF.to_pil_image(img).save(epoch_p / f"{rand}_original.jpg")
+                    TF.to_pil_image(img).save(epoch_p / f"{rand}_original.png")
 
         if training:
             self.optimizer.step()

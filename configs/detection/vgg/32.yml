@@ -1,9 +1,0 @@
-architecture: "vgg16"
-epochs: 200
-lr: 0.0001
-n_cls: 5
-wandb: True
-decay:
-  gamma: 0.975
-img_size: 32
-batch_size: 8

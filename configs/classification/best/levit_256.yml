@@ -1,0 +1,13 @@
+architecture: "timm::levit_256"
+pretrained: True
+format: "pascal_voc"
+epochs: 100
+lr: 0.0005
+min_lr: 0.000005
+n_cls: -1
+wandb: True
+img_size: 224
+mosaic: False
+task: classification
+augmentations: True
+whitening: False

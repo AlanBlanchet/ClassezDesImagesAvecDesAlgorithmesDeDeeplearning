@@ -6,6 +6,7 @@ from pprint import pprint
 import ray
 import torch
 import torch.optim as optim
+import yaml
 from ray import air, train, tune
 from ray.tune.schedulers import ASHAScheduler
 from torch.optim.lr_scheduler import ExponentialLR, StepLR
@@ -16,17 +17,18 @@ from sdd.compat.utils import chose_if_task_bb, is_task_bb
 from sdd.data.augmentations import BaseAugmentations, StanfordDogsAugmentations
 from sdd.data.collator import BB_Collator
 from sdd.data.dataset import StanfordDogsDataset
-from sdd.model.loss import ObjectClassificationLoss, ObjectDetectionLoss
+from sdd.model.loss import ObjectClassificationLoss, ObjectDetectionLoss, get_loss
 from sdd.model.model import StanfordDogsModel
 from sdd.model.stepper import Loader, StanfordDogsStepper
+from sdd.optimizer import Lion
 from sdd.ray.resolver import resolve_config
 from sdd.utils.dict import deepupdate
 from sdd.utils.dir import next_run_dir
 
 torch.cuda.init()
 
-LOG_DIR = (Path(__file__).parents[3] / "logs").absolute()
-LOG_DIR.mkdir(exist_ok=True)
+RUN_DIR = (Path(__file__).parents[3] / "runs").absolute()
+RUN_DIR.mkdir(exist_ok=True)
 
 default_config = {
     "architecture": "test",
@@ -40,8 +42,9 @@ default_config = {
     "true_color": "blue",
     "out_color": "red",
     "optimizer": {"name": "AdamW", "betas": (0.9, 0.999), "weight_decay": 1e-2},
-    "log_p": str(LOG_DIR),
+    "run_p": str(RUN_DIR),
     "mosaic": False,
+    "loss": None,
 }
 
 default_ray_names = [
@@ -59,7 +62,7 @@ default_ray_names = [
 default_ray = {
     **{name: default_config[name] for name in default_ray_names},
     "log": False,
-    "log_p": str(next_run_dir(LOG_DIR)),
+    "log_p": str(next_run_dir(RUN_DIR, create=False)),
     "ray": {
         "batch_size": {
             "type": "choice",
@@ -82,7 +85,7 @@ def start(global_config: dict):
     default = default_ray if tuning else default_config
     final_config = deepupdate({}, default, global_config)
 
-    log_dir = Path(final_config["log_p"])
+    log_dir = Path(final_config["run_p"])
 
     def run(config):
         config["real_batch_size"] = config.get("real_batch_size", config["batch_size"])
@@ -91,6 +94,7 @@ def start(global_config: dict):
 
         # Config params
         task = config.get("task", "detection")
+        format = config.get("format", "pascal_voc")
         box_max_amount = config["box_max_amount"] if is_task_bb(task) else 1
         img_size = config["img_size"]
         n_cls = config.pop("n_cls", -1)
@@ -100,7 +104,10 @@ def start(global_config: dict):
         batch_size = config["batch_size"]
         log = config["log"]
         epochs = config["epochs"]
-        optimizer_params = config["optimizer"]
+        loss_name = config["loss"]
+        optimizer_params = deepupdate(
+            {}, default_config["optimizer"], config["optimizer"]
+        )
         group = config.get("group", None)
 
         batch_ratio = config["batch_size"] / config["real_batch_size"]
@@ -110,13 +117,14 @@ def start(global_config: dict):
         decay = config.get("decay", None)
         min_lr = config.get("min_lr", None)
         mosaic = config["mosaic"]
+        optimizer_name = optimizer_params["name"]
 
         groups = []
         if group is not None:
             groups.append(group)
         groups.append(task)
 
-        augmentations = StanfordDogsAugmentations()
+        augmentations = StanfordDogsAugmentations(config, format)
         dataset = StanfordDogsDataset(
             config,
             img_size,
@@ -150,14 +158,26 @@ def start(global_config: dict):
             model_name=model_name,
         ).to(device)
 
+        # Run dir
         run_p = next_run_dir(log_dir)
+        (run_p / "config.yml").write_text(yaml.dump(config))
+        (run_p / "label2id.yml").write_text(yaml.dump(dataset.label_map._label2id))
 
-        optimizer = optim.AdamW(
-            model.parameters(),
-            lr=lr,
-            betas=optimizer_params["betas"],
-            weight_decay=optimizer_params["weight_decay"],
-        )
+        optimizer = None
+        if optimizer_name == "AdamW":
+            optimizer = optim.AdamW(
+                model.parameters(),
+                lr=lr,
+                betas=optimizer_params["betas"],
+                weight_decay=optimizer_params["weight_decay"],
+            )
+        elif optimizer_name == "Lion":
+            optimizer = Lion(
+                model.parameters(),
+                lr=lr,
+                betas=optimizer_params["betas"],
+                weight_decay=optimizer_params["weight_decay"],
+            )
 
         # Initialize trained or stopped
         loaded_checkpoint = train.get_checkpoint()
@@ -187,9 +207,7 @@ def start(global_config: dict):
 
         config["scheduler"] = type(scheduler).__name__
 
-        loss = chose_if_task_bb(ObjectDetectionLoss, ObjectClassificationLoss, task)(
-            img_size
-        )
+        loss = get_loss(loss_name, task, img_size, format)
 
         # Start a new wandb run to track this script
         run = wandb.init(
@@ -225,6 +243,9 @@ def start(global_config: dict):
 
         # =============== Run loop
         stepper.run(epochs)
+
+        # Save model
+        torch.save(model.state_dict(), (run_p / "checkpoint.pt"))
 
     if tuning:
         os.environ["RAY_AIR_NEW_OUTPUT"] = "0"

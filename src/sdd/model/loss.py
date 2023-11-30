@@ -2,12 +2,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from sdd.compat.utils import chose_if_task_bb, is_task_bb
+
+from .losses import *
+
 
 class ObjectDetectionLoss(nn.Module):
-    def __init__(self, img_size):
+    def __init__(self, img_size, format):
         super().__init__()
 
         self.img_size = img_size
+        self.format = format
 
     def forward(self, clf, box, obj):
         # (B, N, ?)
@@ -20,9 +25,9 @@ class ObjectDetectionLoss(nn.Module):
 
         clf_loss = F.cross_entropy(out_clf[mask], true_clf[mask])
 
-        bb_loss = F.l1_loss(out_bbs[mask], true_bbs[mask]) * 2
+        bb_loss = F.l1_loss(out_bbs[mask], true_bbs[mask]) * 4
 
-        obj_loss = F.mse_loss(out_obj.sigmoid(), true_obj)
+        obj_loss = F.mse_loss(out_obj.sigmoid(), true_obj) * 2
 
         loss = clf_loss + bb_loss + obj_loss
 
@@ -30,7 +35,7 @@ class ObjectDetectionLoss(nn.Module):
 
 
 class ObjectClassificationLoss(nn.Module):
-    def __init__(self, img_size):
+    def __init__(self, img_size, format=None):
         super().__init__()
 
         self.img_size = img_size
@@ -39,6 +44,21 @@ class ObjectClassificationLoss(nn.Module):
         out_clf, true_clf = clf
 
         return F.cross_entropy(out_clf, true_clf)
+
+
+def get_loss(loss_name, task, img_size, format):
+    if loss_name is None:
+        return chose_if_task_bb(ObjectDetectionLoss, ObjectClassificationLoss, task)(
+            img_size, format
+        )
+    elif loss_name == "faster-rcnn":
+        if is_task_bb(task):
+            return FastRCNNLoss()
+        raise ValueError("No classification for FasterRCNN")
+    else:
+        raise NotImplementedError(
+            f"{loss_name} doesn't correspond to any implemented loss"
+        )
 
 
 if __name__ == "__main__":

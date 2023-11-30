@@ -20,6 +20,7 @@ class StanfordDogsDataset(Dataset):
             self.img_size,
             num_classes=self.num_classes,
             augmentations=self.augmentations,
+            format=self.config.get("format", "pascal_voc"),
         )
         self.num_classes_ = self._std_dataset.num_classes_
         self.label_map = self._std_dataset.label_map
@@ -32,7 +33,7 @@ class StanfordDogsDataset(Dataset):
 
         # Base augmentations
         base_augmentations = BaseAugmentations(
-            self.config, self._std_dataset.pytorch_dataset, idx_train
+            self.config, self.img_size, self._std_dataset.pytorch_dataset, idx_train
         )
         self._std_dataset.set_base_augmentations(base_augmentations)
 

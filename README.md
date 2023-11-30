@@ -28,18 +28,22 @@
     - EfficientDet
 
 - Pistes de recherche:
+  - Feature extractions:
+    - Scale Invariant Feature T
+    - Harris Corner Detector
+    - ORB : https://www.gwylab.com/download/ORB_2012.pdf
   - Mixup : https://arxiv.org/abs/1710.09412v2
   - Mosaic : https://iopscience.iop.org/article/10.1088/1742-6596/1684/1/012094/pdf
   - Mosaic guillotine split : http://pds25.egloos.com/pds/201504/21/98/RectangleBinPack.pdf
 
 # Tâches
 
-- [ ] Preprocessing
+- [x] Preprocessing
   - [x] Equalization
-  - [ ] Whitening
-- [ ] Réaliser un réseau CNN manuellement
-- [ ] Réaliser un transfer learning d'un CNN
-  - [ ] Dernières couches
-  - [ ] Choisir des couches
+  - [x] Whitening
+- [x] Réaliser un réseau CNN manuellement
+- [x] Réaliser un transfer learning d'un CNN
+  - [x] Dernières couches
+  - [x] Choisir des couches
 - [x] Data augmentations
 - [ ] Programme simple
