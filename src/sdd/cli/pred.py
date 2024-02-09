@@ -1,4 +1,5 @@
 from click import argument, command
+from matplotlib import pyplot as plt
 
 
 @command()
@@ -9,7 +10,9 @@ def main(run: str, folder: str, out: str):
     import shutil
     from pathlib import Path
 
+    import albumentations as A
     import pandas as pd
+    import torch
     import torchvision.transforms.functional as TF
     from PIL import Image
 
@@ -21,6 +24,7 @@ def main(run: str, folder: str, out: str):
     out_p = Path(out)
 
     config = load_yml(run_p / "config.yml")
+    config["pretrained"] = False
     model_name = config["architecture"]
 
     label2id: dict[str, int] = load_yml(run_p / "label2id.yml")
@@ -35,14 +39,28 @@ def main(run: str, folder: str, out: str):
         1,  # No boxes for classification
         model_name=model_name,
     )
+    state = torch.load(run_p / "checkpoint.pt", map_location="cpu")
+    print(state.keys())
+    model.load_state_dict(state, strict=True)
+    model.train(False)
 
     out_p.mkdir(exist_ok=True, parents=True)
     df = pd.DataFrame({"file": [], "prediction": []})
+
+    preprocess = A.Compose(
+        [
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            A.Resize(img_size, img_size),
+        ]
+    )
+
     for file_p in folder_p.iterdir():
         image = Image.open(file_p)
-        image = image.resize((img_size, img_size))
+        image = TF.pil_to_tensor(image)
+        out = preprocess(image=image.permute(1, 2, 0).numpy())
+        image = torch.from_numpy(out["image"]).permute(2, 0, 1) / 255.0
 
-        image = TF.pil_to_tensor(image) / 255
+        print(image.shape, image.dtype, image.min().item(), image.max().item())
 
         out_pred = model(image.unsqueeze(dim=0)).squeeze(dim=0)
 

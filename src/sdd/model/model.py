@@ -28,9 +28,6 @@ class StanfordDogsModel(torch.nn.Module):
         self.num_classes = num_classes
         self.model_name = model_name
         self.num_bb = num_bb
-        # self.head_in = 16
-        # self.wh = 8
-        # self.res = self.wh**2
 
         task = config.get("task", "detection")
         is_bb = is_task_bb(task)

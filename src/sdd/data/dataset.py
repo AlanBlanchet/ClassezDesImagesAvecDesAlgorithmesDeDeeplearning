@@ -56,6 +56,9 @@ class StanfordDogsDataset(Dataset):
         self._std_dataset.demo(demo)
         return self
 
+    def train(self, train=True):
+        self.dataset_.train(train)
+
     def set_base_augmentations(self, augmentations):
         self.dataset_.set_base_augmentations(augmentations)
 

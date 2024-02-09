@@ -1,6 +1,29 @@
 # Classez des Images à l'aide d'Algorithmes de Deep Learning
 
-# Technology recherchées et/ou utilisée
+# Installation
+
+[Installer poetry](https://python-poetry.org/docs/#installing-with-the-official-installer)
+
+```bash
+poetry install
+poetry shell
+```
+
+# Utilisation
+
+## Lancer un entraînement
+
+```bash
+sdd
+```
+
+## Lancer une prédiction
+
+```bash
+pred /path/to/run /path/to/dog/data /out/path
+```
+
+# Technology recherchées et/ou utilisée pour ce projet
 
 - Pytorch
 - Torchvision
@@ -29,21 +52,9 @@
 
 - Pistes de recherche:
   - Feature extractions:
-    - Scale Invariant Feature T
+    - Scale Invariant Feature Transform
     - Harris Corner Detector
     - ORB : https://www.gwylab.com/download/ORB_2012.pdf
   - Mixup : https://arxiv.org/abs/1710.09412v2
   - Mosaic : https://iopscience.iop.org/article/10.1088/1742-6596/1684/1/012094/pdf
   - Mosaic guillotine split : http://pds25.egloos.com/pds/201504/21/98/RectangleBinPack.pdf
-
-# Tâches
-
-- [x] Preprocessing
-  - [x] Equalization
-  - [x] Whitening
-- [x] Réaliser un réseau CNN manuellement
-- [x] Réaliser un transfer learning d'un CNN
-  - [x] Dernières couches
-  - [x] Choisir des couches
-- [x] Data augmentations
-- [ ] Programme simple

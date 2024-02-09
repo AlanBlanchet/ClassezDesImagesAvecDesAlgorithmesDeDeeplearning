@@ -112,13 +112,23 @@ class MosaicStanfordDogsDataset(Dataset):
 
         return [ax[0], ay[0], ax[1], ay[1]]
 
+    def train(self, train=True):
+        self.original.train(train)
+
     def __getitem__(self, index):
         item_idx = self.idx_map[index]
 
+        is_val = index > len(self.train_idx_)
+
+        should_augment = self.original.augmentations.active
+        self.original.train(is_val)
+
         original_items = [self.original[idx] for idx in item_idx]
 
+        self.original.augment(should_augment)
+
         image, annotations = self.to_mosaic(original_items)
-        annotations_unscaled = rescale(annotations, image.shape[1:])
+        # annotations_unscaled = rescale(annotations, image.shape[1:])
 
         targets = []
         [targets.extend(item["target"]) for item in original_items]
@@ -130,7 +140,7 @@ class MosaicStanfordDogsDataset(Dataset):
             "image": image,
             "annotations": annotations,
             "target": targets,
-            "annotations_unscaled": annotations_unscaled,
+            # "annotations_unscaled": annotations_unscaled,
             "name": name,
         }
 

@@ -1,21 +1,20 @@
 {
-    "files.exclude": {
-      "**/Thumbs.db": true,
-      "**/__pycache__": true,
-      "**/*.egg-info": true
-    },
-    "editor.formatOnSave": true,
-    "notebook.formatOnSave.enabled": false,
-    "[python]": {
-      "editor.codeActionsOnSave": {
-        "source.organizeImports": true,
-      },
-    },
-    "[toml]": {
-      "editor.defaultFormatter": "tamasfe.even-better-toml"
-    },
-    "[javascript][typescript][yaml]": {
-      "editor.defaultFormatter": "esbenp.prettier-vscode"
+  "files.exclude": {
+    "**/Thumbs.db": true,
+    "**/__pycache__": true,
+    "**/*.egg-info": true
+  },
+  "editor.formatOnSave": true,
+  "notebook.formatOnSave.enabled": false,
+  "[python]": {
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
     }
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+  "[javascript][typescript][yaml]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
   }
-  
+}

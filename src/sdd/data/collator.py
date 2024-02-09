@@ -35,6 +35,12 @@ class BB_Collator:
             target[:min_len] = targets[:min_len]
             elem["target"] = target
 
+            if "name" in elem:
+                l = []
+                l.extend(elem["name"])
+                while len(l) < self.box_max_amount:
+                    l.append("")
+
         return torch.utils.data.default_collate(batch)
 
 

@@ -2,6 +2,9 @@ from pathlib import Path
 from pprint import pprint
 from typing import Literal, NamedTuple
 
+import matplotlib
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,7 +21,7 @@ from wandb.wandb_run import Run
 
 from sdd.compat import is_task_bb
 from sdd.compat.format import format_for_visualize
-from sdd.data.standard import StandardStanfordDogsDataset
+from sdd.data.dataset import StanfordDogsDataset
 from sdd.metrics.box import BoxMetrics
 from sdd.metrics.classification import ClassificationMetrics
 from sdd.model.model import StanfordDogsModel
@@ -35,7 +38,7 @@ class StanfordDogsStepper:
     config: dict
     device: str
     dataloaders: list[Loader]
-    dataset: StandardStanfordDogsDataset
+    dataset: StanfordDogsDataset
     model: StanfordDogsModel
     loss: nn.Module
     optimizer: nn.Module
@@ -55,7 +58,7 @@ class StanfordDogsStepper:
         self.format = self.config.get("format", "pascal_voc")
         self.returns_loss = self.config.get("model_returns_loss", False)
 
-        self._clf_metrics = ClassificationMetrics(self.dataset.num_classes_).to(
+        self._clf_metrics = ClassificationMetrics(self.dataset.label_map).to(
             self.device
         )
 
@@ -81,6 +84,7 @@ class StanfordDogsStepper:
     def train(self, training: bool = True):
         if self.model.training != training:
             self.model.train(training)
+            self.dataset.train(training)
             if training:
                 self._fit = []
             self.reset()
@@ -116,6 +120,7 @@ class StanfordDogsStepper:
             **self._format_metrics(
                 {
                     **self._clf_metrics.compute(),
+                    "plots": self._clf_metrics.plot(),
                     "clf_loss": self._clf_loss_metric.compute(),
                     "loss": loss,
                     **bb_metrics,
@@ -125,9 +130,6 @@ class StanfordDogsStepper:
         }
 
     def run(self, epochs: int):
-        # Val samples
-        samples = self.dataloaders[-1].dataloader.batch_sampler.sampler
-
         # Epoch cycles
         for epoch in trange(
             epochs,
@@ -137,13 +139,16 @@ class StanfordDogsStepper:
             leave=True,
             disable=not self.log,
         ):
+            # Samples
             self._epoch = epoch
-            self.rand_item = np.random.choice(samples, 1)[0]
 
             # Dataloaders iteration
             for dataloader, name in self.dataloaders:
                 is_train = name == "train"
                 self.train(is_train)
+
+                samples = dataloader.batch_sampler.sampler
+                self.rand_item = np.random.choice(samples, 1)[0]
 
                 with torch.set_grad_enabled(is_train):
                     # Train / Val
@@ -259,7 +264,9 @@ class StanfordDogsStepper:
                 rand = self.rand_item
 
                 # Pick a random sample for logging
-                if not training and rand in indexes and is_task_bb(self.task):
+                if rand in indexes and is_task_bb(self.task):
+                    split = "train" if training else "val"
+
                     rand_idx_pos = (indexes == rand).nonzero().squeeze(dim=0)
                     batch_idx = rand_idx_pos.item()
 
@@ -317,32 +324,33 @@ class StanfordDogsStepper:
                         labels=self.dataset.label_map[true_clfs],
                     )
 
-                    TF.to_pil_image(rand_image).save(epoch_p / f"{rand}.png")
+                    TF.to_pil_image(rand_image).save(epoch_p / f"{rand}_{split}.png")
 
                     # Original
-                    self.dataset.original(True)
-                    original_item = self.dataset[rand]
-                    img = (
-                        original_item["original_image"]
-                        .type(torch.uint8)
-                        .permute(2, 0, 1)
-                    )
-                    img, annots = format_for_visualize(
-                        img,
-                        original_item["original_annotations"],
-                        "pascal_voc",
-                        show_size,
-                    )
-                    self.dataset.original(False)
+                    if not training and not self.dataset.mosaic:
+                        self.dataset.original(True)
+                        original_item = self.dataset[rand]
+                        img = (
+                            original_item["original_image"]
+                            .type(torch.uint8)
+                            .permute(2, 0, 1)
+                        )
+                        img, annots = format_for_visualize(
+                            img,
+                            original_item["original_annotations"],
+                            "pascal_voc",
+                            show_size,
+                        )
+                        self.dataset.original(False)
 
-                    img = U.draw_bounding_boxes(
-                        img,
-                        annots.type(torch.int32),
-                        colors=self.config["true_color"],
-                        labels=self.dataset.label_map[true_clfs],
-                    )
+                        img = U.draw_bounding_boxes(
+                            img,
+                            annots.type(torch.int32),
+                            colors=self.config["true_color"],
+                            labels=self.dataset.label_map[true_clfs],
+                        )
 
-                    TF.to_pil_image(img).save(epoch_p / f"{rand}_original.png")
+                        TF.to_pil_image(img).save(epoch_p / f"{rand}_original.png")
 
         if training:
             self.optimizer.step()
@@ -350,8 +358,10 @@ class StanfordDogsStepper:
             if self.scheduler:
                 self.scheduler.step()
 
-    def log_metrics(self, metrics, epoch, val=False):
-        self.wandb_run.log(metrics, step=epoch)
+    def log_metrics(self, metrics: dict, epoch, val=False):
+        # Get plots
+        plot_name = list(filter(lambda x: "plots" in x, metrics.keys()))[0]
+        plots: list[plt.Figure] = metrics.pop(plot_name, {})
 
         if val and self.log:
             tqdm.write(
@@ -360,6 +370,20 @@ class StanfordDogsStepper:
                     [self.format_metric(name, val) for name, val in metrics.items()]
                 )
             )
+
+            # if not self.wandb_run.disabled:
+            for k, fig in plots.items():
+                plt.close()
+                f = fig()
+                res = max(self.dataset.num_classes_ // 2, 10)
+                f.set_figwidth(res)
+                f.set_figheight(int(res * 0.8))
+                plt.xticks(ha="right", rotation=45)
+                plt.tight_layout(pad=1.03)
+                f.set_dpi(5)
+                metrics = {**metrics, f"plot_{k}": plt}
+
+        self.wandb_run.log(metrics, step=epoch)
 
     def format_metric(self, key, val):
         if key == "lr":

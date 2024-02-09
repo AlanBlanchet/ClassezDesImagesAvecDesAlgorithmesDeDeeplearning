@@ -49,7 +49,7 @@ def to_format(
             annotations = torch.cat([xmin.T, ymin.T, w.T, h.T], dim=1)
         elif wanted_format == "yolo":
             cx, cy = xmin + w / 2, ymin + h / 2
-            return min_max_annotations(
+            annotations = min_max_annotations(
                 torch.cat([cx.T, cy.T, w.T, h.T], dim=1), size=size
             )
         else:
@@ -75,6 +75,10 @@ def to_format(
             raise ValueError
     else:
         raise ValueError
+
+    print("VALIDATE", validate, size)
+    if validate:
+        annotations = validate_annotations(annotations, wanted_format, wh=size)
 
     return annotations
 
@@ -105,42 +109,29 @@ def format_for_visualize(image, annotations, format, size, normalized=False):
         image = image.permute(1, 2, 0)
 
     annotations = validate_annotations(
-        annotations, format, normalized=normalized, wh=(size, size)
+        annotations, format, normalized=normalized, wh=(1, 1)
     )
 
     image = image.cpu().numpy()
 
-    # print("\n" + "=" * 10)
-    # print("image", list(image.shape))
-    # print("size", size)
-    # print(f"{format} -> pascal_voc")
-    # print("Unnormalized")
-    # print(annotations)
-
     img_size = image.shape[:2]
 
     if normalized:
-        image *= 255
         image = unnormalize(image=image)["image"]
         image *= 255
         annotations = to_unnormalized(annotations, format, img_size)
 
-    # print("Normal")
-    # print(annotations)
     annotations = to_format(annotations, img_size, "pascal_voc", format)
-    # print("Formatted")
-    # print(annotations)
-    annotations = annotations.cpu().numpy()
+    annotations = annotations.cpu()
 
     resize = A.Compose(
         [A.Resize(width=size, height=size)],
         bbox_params=A.BboxParams(format="pascal_voc", label_fields=[]),
     )
 
-    result = resize(image=image, bboxes=annotations)
+    result = resize(image=image, bboxes=annotations.numpy())
 
     annotations = torch.tensor(result["bboxes"])
-    annotations = torch.clip(annotations, 0, size).type(torch.int32)
     image = torch.from_numpy(result["image"]).to(torch.uint8)
 
     if shape[0] == 3:
@@ -160,14 +151,17 @@ def validate_annotations(annotations, format, normalized=False, wh=None):
     if format == "pascal_voc":
         # Validate annotations
         for bb in annotations:
+            step = normalized_step(normalized)
             if bb[0] > bb[2]:
                 bb[[0, 2]] = bb[[2, 0]]
             elif bb[0] == bb[2]:
-                bb[2] += normalized_step(normalized)
+                idx = 0 if bb[2] == wh[0] else 2
+                bb[idx] += -step if idx == 0 else step
             if bb[1] > bb[3]:
                 bb[[1, 3]] = bb[[3, 1]]
             elif bb[1] == bb[3]:
-                bb[3] += normalized_step(normalized)
+                idx = 1 if bb[3] == wh[1] else 3
+                bb[idx] += -step if idx == 1 else step
     elif format == "coco":
         pascal = to_format(annotations, wh, "pascal_voc", format, validate=False)
         annotations = validate_annotations(pascal, "pascal_voc", normalized=normalized)

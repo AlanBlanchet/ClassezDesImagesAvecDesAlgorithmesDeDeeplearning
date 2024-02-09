@@ -13,11 +13,11 @@ from torch.optim.lr_scheduler import ExponentialLR, StepLR
 from torch.utils.data import DataLoader
 
 import wandb
-from sdd.compat.utils import chose_if_task_bb, is_task_bb
-from sdd.data.augmentations import BaseAugmentations, StanfordDogsAugmentations
+from sdd.compat.utils import is_task_bb
+from sdd.data.augmentations import StanfordDogsAugmentations
 from sdd.data.collator import BB_Collator
 from sdd.data.dataset import StanfordDogsDataset
-from sdd.model.loss import ObjectClassificationLoss, ObjectDetectionLoss, get_loss
+from sdd.model.loss import get_loss
 from sdd.model.model import StanfordDogsModel
 from sdd.model.stepper import Loader, StanfordDogsStepper
 from sdd.optimizer import Lion
@@ -26,6 +26,7 @@ from sdd.utils.dict import deepupdate
 from sdd.utils.dir import next_run_dir
 
 torch.cuda.init()
+
 
 RUN_DIR = (Path(__file__).parents[3] / "runs").absolute()
 RUN_DIR.mkdir(exist_ok=True)
@@ -108,7 +109,9 @@ def start(global_config: dict):
         optimizer_params = deepupdate(
             {}, default_config["optimizer"], config["optimizer"]
         )
-        group = config.get("group", None)
+        tags = config.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
 
         batch_ratio = config["batch_size"] / config["real_batch_size"]
         assert int(batch_ratio) == float(batch_ratio)
@@ -119,10 +122,7 @@ def start(global_config: dict):
         mosaic = config["mosaic"]
         optimizer_name = optimizer_params["name"]
 
-        groups = []
-        if group is not None:
-            groups.append(group)
-        groups.append(task)
+        tags.append(task)
 
         augmentations = StanfordDogsAugmentations(config, format)
         dataset = StanfordDogsDataset(
@@ -217,7 +217,7 @@ def start(global_config: dict):
                 **config,
                 "optimizer": type(optimizer).__name__,
             },
-            tags=groups,
+            tags=tags,
             mode=None if wandb_active else "disabled",
         )
 

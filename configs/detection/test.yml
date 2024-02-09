@@ -5,7 +5,8 @@ lr: 0.0005
 min_lr: 0.000005
 n_cls: 2
 img_size: 128
-wandb: False
+wandb: True
 task: detection
-augmentations: True
+augmentations: False
 whitening: False
+batch_size: 32
