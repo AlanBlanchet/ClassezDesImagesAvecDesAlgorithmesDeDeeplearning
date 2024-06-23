@@ -1,5 +1,7 @@
 # Classez des Images à l'aide d'Algorithmes de Deep Learning
 
+Ceci est un projet pour OpenClassrooms avec un peu plus d'éléments de recherche.
+
 # Installation
 
 [Installer poetry](https://python-poetry.org/docs/#installing-with-the-official-installer)
